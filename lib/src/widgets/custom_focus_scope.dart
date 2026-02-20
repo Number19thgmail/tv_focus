@@ -14,12 +14,10 @@ class CustomFocusScope extends StatefulWidget {
   final FWidgetTapped? onBackTap;
   final FWidgetTapped? onTap;
   final bool saveFocus;
-  final bool autofocus;
   final KeyEventResult Function(FocusNode, KeyEvent)? onKeyEvent;
   final String label;
 
-  /// set this widget as focusable on first time when parent focus scope has primary focus
-  final bool isFirstFocus;
+  final int initialIndex;
 
   const CustomFocusScope({
     required this.child,
@@ -32,8 +30,7 @@ class CustomFocusScope extends StatefulWidget {
     this.onBackTap,
     this.onTap,
     this.saveFocus = true,
-    this.autofocus = false,
-    this.isFirstFocus = false,
+    this.initialIndex = 0,
     this.onKeyEvent,
     super.key,
   });
@@ -49,33 +46,44 @@ class _CustomFocusScopeState extends State<CustomFocusScope> {
   void initState() {
     super.initState();
 
-    _node = CustomFocusScopeNode(label: widget.label, isFirstFocus: widget.isFirstFocus);
+    _node = CustomFocusScopeNode(
+      label: widget.label,
+      debugLabel: widget.label,
+      initialIndex: widget.initialIndex,
+    );
+    CustomFocusRedirector.instance.registerScope(_node);
+  }
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (widget.autofocus) {
-        _node.autofocus(_node.children.firstWhere(_checkFocusNode, orElse: () => _node.children.first));
-      }
-    });
+  @override
+  void didUpdateWidget(covariant CustomFocusScope oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialIndex != widget.initialIndex) {
+      _node.setInitialIndex(widget.initialIndex);
+    }
+  }
+
+  @override
+  void dispose() {
+    CustomFocusRedirector.instance.unregisterScope(_node);
+    _node.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return FocusScope(
-      autofocus: widget.autofocus,
       node: _node,
-      onFocusChange: (value) async {
-        if (value) {
-          if (!widget.saveFocus || _node.isFirstFocused) {
-            if (_node.children.where((element) => element.hasFocus).isEmpty) {
-              _requestFirstFocus();
-            } else {
-              _moveFocusToFirst();
+      onFocusChange: (value) {
+        if (value && (_node.isRequireFirstFocus && _node.hasFocus)) {
+          _node.setInitialFocus();
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!_node.hasFocus) {
+              _node.setIsRequireFirstFocus(true);
             }
-          } else {
-            if (_node.children.where((element) => element.hasFocus).isEmpty) {
-              _requestFirstFocus();
-            }
-          }
+          });
+        }
+        if (value && !widget.saveFocus) {
+          _node.setInitialFocus();
         }
         widget.onFocusChange?.call(value);
       },
@@ -136,24 +144,6 @@ class _CustomFocusScopeState extends State<CustomFocusScope> {
         return node.parentFocusScopeNode.focusInDirection(TraversalDirection.right);
       default:
         return false;
-    }
-  }
-
-  bool _checkFocusNode(FocusNode node) => node is CustomNodeMixin && (node as CustomNodeMixin).isRequireFirstFocus;
-
-  void _requestFirstFocus() {
-    if (_node.children.isNotEmpty) {
-      _node.children.firstWhere(_checkFocusNode, orElse: () => _node.children.first).requestFocus();
-    }
-  }
-
-  void _moveFocusToFirst() {
-    final startIndex = _node.children.indexed
-        .firstWhere((node) => _checkFocusNode(node.$2), orElse: () => (0, _node.children.first))
-        .$1;
-    final index = _node.children.indexed.where((element) => element.$2.hasFocus).first.$1;
-    for (int i = startIndex; i != index; startIndex > index ? i-- : i++) {
-      startIndex > index ? _node.nextFocus() : _node.previousFocus();
     }
   }
 }

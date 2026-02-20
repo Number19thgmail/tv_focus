@@ -4,13 +4,20 @@ import 'package:tv_focus/src/utils/extension.dart';
 import '../widgets/index.dart';
 
 abstract class FocusHelper {
-  ///Get parent CustorFocusScope with [label]
+  ///Get CustorFocusScope with [label]
   static CustomFocusScopeNode getCustomFocusScope(String label) {
-    try {
-      return FocusManager.instance.primaryFocus!.labeledFocusScopeNode(label);
-    } catch (e, stackTrace) {
-      throw '$e $stackTrace';
+    final focusManager = FocusManager.instance;
+    final node = focusManager.primaryFocus?.hasLabeledFocusScopeNode(label) == true
+        ? focusManager.primaryFocus?.labeledFocusScopeNode(label)
+        : focusManager.rootScope.findCustomFocusScopeNode(label);
+    if (node == null) {
+      throw 'Label «$label» not found in focus tree';
     }
+    return node;
+  }
+
+  static bool hasLabeledFocusScopeNode(String label) {
+    return FocusManager.instance.rootScope.findCustomFocusScopeNode(label) != null;
   }
 
   ///Move focus to first [FocusableWidget] on CustorFocusScope with [label]
@@ -101,7 +108,6 @@ abstract class FocusHelper {
     }
   }
 
-
   ///Move focus to CustomFocusScopeNode from [node]
   static bool _updateScopeFocus(CustomFocusScopeNode node) {
     final scopeNode = node.parentCustomFocusScopeNode;
@@ -122,5 +128,34 @@ abstract class FocusHelper {
     }
 
     return true;
+  }
+
+  ///Get parent CustomFocusScopeNode with `recursions`.
+  ///
+  /// 1 - gets parent of a parent
+  static CustomFocusScopeNode? getParentCustomFocusScopeNode({int recursions = 0}) {
+    if (recursions <= 0) {
+      return FocusManager.instance.primaryFocus?.parentCustomFocusScopeNode;
+    }
+    return getParentCustomFocusScopeNode(
+      recursions: recursions - 1,
+    )?.parentCustomFocusScopeNode;
+  }
+
+  static CustomFocusScopeNode? getFirstFocusCustomFocusScope() {
+    final scope = getParentCustomFocusScopeNode();
+    if (scope == null) {
+      return null;
+    }
+    return _getUpperFirstFocusScope(scope);
+  }
+
+  static CustomFocusScopeNode? _getUpperFirstFocusScope(CustomFocusScopeNode node) {
+    final parentScope = node.parentCustomFocusScopeNode;
+    if (parentScope == null) {
+      return node.isCustomChildrenRequireFocus && node.canRequestFocus ? node : null;
+    }
+    return _getUpperFirstFocusScope(parentScope) ??
+        (node.isCustomChildrenRequireFocus && node.canRequestFocus ? node : null);
   }
 }

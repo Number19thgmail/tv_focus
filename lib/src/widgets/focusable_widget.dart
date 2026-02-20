@@ -6,32 +6,38 @@ import '../utils/focus_helper.dart';
 import 'index.dart';
 
 class FocusableWidget extends StatefulWidget {
+  final String label;
   final FWidgetBuilder builder;
   final ValueChanged<bool>? onFocusChange;
   final VoidCallback? onTap;
+  final VoidCallback? onLongTap;
   final FWidgetTapped? onUpTap;
   final FWidgetTapped? onDownTap;
   final FWidgetTapped? onLeftTap;
   final FWidgetTapped? onRightTap;
   final FWidgetTapped? onBackTap;
-  final FocusNode? parentFocusNode;
   final KeyEventResult Function(FocusNode, KeyEvent)? onKeyEvent;
 
-  /// set this widget as focusable on first time when parent focus scope has primary focus
-  final bool isFirstFocus;
+  /// Enable long press animation
+  final bool enableLongPressAnimation;
+
+  /// Duration for long press animation
+  final Duration longPressAnimationDuration;
 
   const FocusableWidget({
+    required this.label,
     required this.builder,
     this.onFocusChange,
-    this.parentFocusNode,
     this.onKeyEvent,
     this.onTap,
+    this.onLongTap,
     this.onUpTap,
     this.onDownTap,
     this.onLeftTap,
     this.onRightTap,
     this.onBackTap,
-    this.isFirstFocus = false,
+    this.enableLongPressAnimation = false,
+    this.longPressAnimationDuration = const Duration(milliseconds: 500),
     super.key,
   });
 
@@ -39,35 +45,82 @@ class FocusableWidget extends StatefulWidget {
   State<FocusableWidget> createState() => _FocusableWidgetState();
 }
 
-class _FocusableWidgetState extends State<FocusableWidget> with SingleTickerProviderStateMixin {
+class _FocusableWidgetState extends State<FocusableWidget> with TickerProviderStateMixin {
   bool _isFocused = false;
 
   late final AnimationController _focusAnimationController;
-  late final Animation<double> _animation;
+  late final Animation<double> _focusAnimation;
+
+  // Long press animation controllers
+  late final AnimationController _longPressAnimationController;
+  late final Animation<double> _scaleAnimation;
 
   late final CustomFocusNode _focusNode;
+  // Long press state tracking
+  bool _isLongPressing = false;
+
+  // NEW: suppress key up event if key is already held when focused
+  bool _shouldIgnoreKeyUpUntilReleased = false;
 
   @override
   void initState() {
     super.initState();
 
-    _focusNode = CustomFocusNode(isFirstFocus: widget.isFirstFocus);
+    _focusNode = CustomFocusNode(
+      label: widget.label,
+      debugLabel: widget.label,
+    );
 
     _focusAnimationController = AnimationController(
       duration: const Duration(milliseconds: 100),
       vsync: this,
     );
 
-    _animation = CurvedAnimation(
+    _focusAnimation = CurvedAnimation(
       parent: _focusAnimationController,
       curve: Curves.easeIn,
+    );
+
+    _longPressAnimationController = AnimationController(
+      duration: widget.longPressAnimationDuration,
+      vsync: this,
+    );
+
+    _longPressAnimationController.addStatusListener(_onLongPressAnimationStatusChange);
+
+    _scaleAnimation = Tween<double>(begin: 1.0, end: 0.95).animate(
+      CurvedAnimation(
+        parent: _longPressAnimationController,
+        curve: Curves.easeOutCubic,
+      ),
     );
   }
 
   @override
   void dispose() {
     _focusAnimationController.dispose();
+    _longPressAnimationController.dispose();
     super.dispose();
+  }
+
+  void _onLongPressAnimationStatusChange(AnimationStatus status) {
+    if (status == AnimationStatus.completed && _isLongPressing) {
+      widget.onLongTap?.call();
+      _longPressAnimationController.reverse();
+      _isLongPressing = false;
+    }
+  }
+
+  void _startLongPress() {
+    if (widget.enableLongPressAnimation && widget.onLongTap != null) {
+      _isLongPressing = true;
+      _longPressAnimationController.forward();
+    }
+  }
+
+  void _cancelLongPress() {
+    _isLongPressing = false;
+    _longPressAnimationController.reverse();
   }
 
   @override
@@ -79,6 +132,7 @@ class _FocusableWidgetState extends State<FocusableWidget> with SingleTickerProv
           FocusHelper.getFocus(_focusNode);
           widget.onTap?.call();
         },
+        onLongPress: widget.enableLongPressAnimation ? null : widget.onLongTap,
         child: Focus(
           focusNode: _focusNode,
           onFocusChange: (value) {
@@ -86,8 +140,28 @@ class _FocusableWidgetState extends State<FocusableWidget> with SingleTickerProv
             setState(() {
               _isFocused = value;
             });
+
+            if (value && _focusNode.isRequireFirstFocus && _focusNode.hasFocus) {
+              _focusNode.setIsRequireFirstFocus(false);
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (!_focusNode.hasFocus) {
+                  _focusNode.setIsRequireFirstFocus(true);
+                }
+              });
+            }
+
             if (_isFocused) {
               _focusAnimationController.forward();
+
+              // Check if select/enter is currently pressed
+              final keysPressed = HardwareKeyboard.instance.logicalKeysPressed;
+              if (keysPressed.contains(LogicalKeyboardKey.select) ||
+                  keysPressed.contains(LogicalKeyboardKey.enter) ||
+                  keysPressed.contains(LogicalKeyboardKey.space) ||
+                  keysPressed.contains(LogicalKeyboardKey.open) ||
+                  keysPressed.contains(LogicalKeyboardKey.accept)) {
+                _shouldIgnoreKeyUpUntilReleased = true;
+              }
             } else {
               _focusAnimationController.reverse();
             }
@@ -112,13 +186,22 @@ class _FocusableWidgetState extends State<FocusableWidget> with SingleTickerProv
                 }
               },
           child: AnimatedBuilder(
-            animation: _animation,
+            animation: Listenable.merge([_focusAnimation, _scaleAnimation]),
             builder: (_, __) {
-              return widget.builder(
+              Widget child = widget.builder(
                 context,
                 _isFocused,
                 _focusAnimationController,
               );
+
+              if (widget.enableLongPressAnimation) {
+                child = Transform.scale(
+                  scale: _scaleAnimation.value,
+                  child: child,
+                );
+              }
+
+              return child;
             },
           ),
         ),
@@ -129,16 +212,54 @@ class _FocusableWidgetState extends State<FocusableWidget> with SingleTickerProv
   bool? _manualHandler(KeyEvent event) {
     switch (event.logicalKey) {
       case LogicalKeyboardKey.select:
+      case LogicalKeyboardKey.open:
+      case LogicalKeyboardKey.accept:
+      case LogicalKeyboardKey.enter:
+      case LogicalKeyboardKey.space:
+        if (event is KeyDownEvent && widget.enableLongPressAnimation) {
+          _startLongPress();
+          return true;
+        } else if (event is KeyRepeatEvent && widget.onLongTap != null) {
+          if (widget.enableLongPressAnimation) {
+            return true;
+          } else {
+            widget.onLongTap?.call();
+            return true;
+          }
+        } else if (event is KeyUpEvent && widget.enableLongPressAnimation) {
+          _cancelLongPress();
+          return true;
+        }
         return false;
       case LogicalKeyboardKey.arrowUp:
+        if (event is KeyUpEvent && widget.enableLongPressAnimation && _isLongPressing) {
+          _cancelLongPress();
+          return true;
+        }
         return widget.onUpTap?.call();
       case LogicalKeyboardKey.arrowDown:
+        if (event is KeyUpEvent && widget.enableLongPressAnimation && _isLongPressing) {
+          _cancelLongPress();
+          return true;
+        }
         return widget.onDownTap?.call();
       case LogicalKeyboardKey.arrowLeft:
+        if (event is KeyUpEvent && widget.enableLongPressAnimation && _isLongPressing) {
+          _cancelLongPress();
+          return true;
+        }
         return widget.onLeftTap?.call();
       case LogicalKeyboardKey.arrowRight:
+        if (event is KeyUpEvent && widget.enableLongPressAnimation && _isLongPressing) {
+          _cancelLongPress();
+          return true;
+        }
         return widget.onRightTap?.call();
       case LogicalKeyboardKey.goBack:
+        if (event is KeyUpEvent && widget.enableLongPressAnimation && _isLongPressing) {
+          _cancelLongPress();
+          return true;
+        }
         return false;
       default:
         return null;
@@ -161,12 +282,26 @@ class _FocusableWidgetState extends State<FocusableWidget> with SingleTickerProv
   }
 
   bool? _upKeyHandler(KeyEvent event) {
+    //Suppress select/enter/space key up after focus if it was already held
+    if (_shouldIgnoreKeyUpUntilReleased &&
+        (event.logicalKey == LogicalKeyboardKey.select ||
+            event.logicalKey == LogicalKeyboardKey.enter ||
+            event.logicalKey == LogicalKeyboardKey.space ||
+            event.logicalKey == LogicalKeyboardKey.open ||
+            event.logicalKey == LogicalKeyboardKey.accept)) {
+      _shouldIgnoreKeyUpUntilReleased = false;
+      return true;
+    }
+
     switch (event.logicalKey) {
       case LogicalKeyboardKey.select:
       case LogicalKeyboardKey.open:
       case LogicalKeyboardKey.accept:
       case LogicalKeyboardKey.enter:
       case LogicalKeyboardKey.space:
+        if (widget.enableLongPressAnimation) {
+          _cancelLongPress();
+        }
         if (widget.onTap != null) {
           widget.onTap!();
         }
